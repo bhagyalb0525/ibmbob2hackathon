@@ -22,11 +22,16 @@
   "author": "regen team",
   "license": "MIT",
   "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.11.0",
+    "jest": "^30.5.2",
+    "ts-jest": "^29.4.14",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.6.1",
+    "express": "^5.2.1"
   }
 }

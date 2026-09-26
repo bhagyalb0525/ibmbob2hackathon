@@ -1,1 +1,348 @@
-/* Dark-mode DevOps dashboard styling with status indicators, glassmorphic cards, and diff highlight themes */
+/* Dark-mode DevOps dashboard styling — status indicators, cards, diff highlight */
+
+/* ------------------------------------------------------------------ Reset */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* --------------------------------------------------------------- Variables */
+:root {
+  --bg:         #0d1117;
+  --surface:    #161b22;
+  --surface2:   #21262d;
+  --border:     #30363d;
+  --text:       #e6edf3;
+  --muted:      #8b949e;
+  --accent:     #58a6ff;
+  --green:      #3fb950;
+  --yellow:     #d29922;
+  --red:        #f85149;
+  --purple:     #bc8cff;
+  --orange:     #ffa657;
+  --radius:     8px;
+  --font:       'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+/* ------------------------------------------------------------------ Base */
+html, body { height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+#app {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 16px 40px;
+}
+
+/* ---------------------------------------------------------------- Header */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.header-left { display: flex; align-items: center; gap: 12px; }
+
+.logo {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -0.5px;
+}
+
+.subtitle { color: var(--muted); font-size: 13px; }
+
+/* --------------------------------------------------------------- Controls */
+.controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  padding: 7px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn:hover { background: var(--surface); border-color: var(--accent); }
+
+.btn--primary  { border-color: var(--accent);  color: var(--accent); }
+.btn--immune   { border-color: var(--purple);  color: var(--purple); }
+.btn--danger   { border-color: var(--red);     color: var(--red); }
+
+.btn--primary:hover  { background: rgba(88,166,255,0.1); }
+.btn--immune:hover   { background: rgba(188,140,255,0.1); }
+.btn--danger:hover   { background: rgba(248,81,73,0.1); }
+
+/* ------------------------------------------------------------------ Grid */
+.grid { display: grid; gap: 16px; margin-bottom: 16px; }
+.grid--2col { grid-template-columns: 1fr 1fr; }
+
+@media (max-width: 760px) { .grid--2col { grid-template-columns: 1fr; } }
+
+/* ------------------------------------------------------------------ Card */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* --------------------------------------------------------------- Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.badge--connecting  { background: rgba(210,153,34,0.15);  color: var(--yellow); border: 1px solid var(--yellow); }
+.badge--connected   { background: rgba(63,185,80,0.15);   color: var(--green);  border: 1px solid var(--green); }
+.badge--error       { background: rgba(248,81,73,0.15);   color: var(--red);    border: 1px solid var(--red); }
+
+/* -------------------------------------------------------- Stage Badges */
+.stage-badge { font-size: 11px; font-weight: 600; border-radius: 4px; padding: 2px 8px; text-transform: uppercase; }
+
+.stage--IDLE              { background: rgba(139,148,158,0.15); color: var(--muted); }
+.stage--MEMORY_LOOKUP     { background: rgba(188,140,255,0.15); color: var(--purple); }
+.stage--TRIAGING          { background: rgba(210,153,34,0.2);   color: var(--yellow); }
+.stage--DIAGNOSING        { background: rgba(255,166,87,0.2);   color: var(--orange); }
+.stage--TREATING          { background: rgba(88,166,255,0.2);   color: var(--accent); }
+.stage--VERIFYING         { background: rgba(88,166,255,0.2);   color: var(--accent); }
+.stage--SCRIBING          { background: rgba(63,185,80,0.15);   color: var(--green); }
+.stage--RESOLVED          { background: rgba(63,185,80,0.2);    color: var(--green); }
+.stage--IMMUNE_RECOVERED  { background: rgba(188,140,255,0.25); color: var(--purple); }
+.stage--FAILED            { background: rgba(248,81,73,0.2);    color: var(--red); }
+
+/* -------------------------------------------------------- Severity Badges */
+.sev-badge { font-size: 11px; font-weight: 600; border-radius: 4px; padding: 2px 8px; text-transform: uppercase; }
+.sev--CRITICAL { background: rgba(248,81,73,0.25);   color: var(--red); }
+.sev--HIGH     { background: rgba(255,166,87,0.25);  color: var(--orange); }
+.sev--MEDIUM   { background: rgba(210,153,34,0.2);   color: var(--yellow); }
+.sev--LOW      { background: rgba(63,185,80,0.15);   color: var(--green); }
+
+/* --------------------------------------------------------- Incident Detail */
+.incident-row { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
+.incident-label { color: var(--muted); font-size: 12px; min-width: 110px; }
+.incident-value { font-size: 12px; }
+
+.stack-trace {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 100px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+
+/* ---------------------------------------------------- Immune Memory Stats */
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+.stat-item {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--accent);
+  display: block;
+}
+
+.stat-value--purple  { color: var(--purple); }
+.stat-value--green   { color: var(--green); }
+.stat-value--yellow  { color: var(--yellow); }
+
+.stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+
+/* --------------------------------------------------- Pipeline Stepper */
+.pipeline-stepper {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  padding: 8px 0;
+  overflow-x: auto;
+}
+
+.step {
+  flex: 1;
+  min-width: 90px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+.step::after {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  width: 100%;
+  height: 2px;
+  background: var(--border);
+  z-index: 0;
+}
+
+.step:last-child::after { display: none; }
+
+.step-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--surface2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  position: relative;
+  z-index: 1;
+  transition: all 0.25s;
+}
+
+.step--done    .step-dot { background: var(--green);  border-color: var(--green);  color: #fff; }
+.step--active  .step-dot { background: var(--accent); border-color: var(--accent); color: #fff; animation: pulse 1.4s infinite; }
+.step--skipped .step-dot { background: var(--purple); border-color: var(--purple); color: #fff; }
+.step--failed  .step-dot { background: var(--red);    border-color: var(--red);    color: #fff; }
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(88,166,255,0.5); }
+  50%       { box-shadow: 0 0 0 6px rgba(88,166,255,0); }
+}
+
+.step-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  margin-top: 6px;
+  line-height: 1.3;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.step--active  .step-label { color: var(--accent); font-weight: 600; }
+.step--done    .step-label { color: var(--green); }
+.step--skipped .step-label { color: var(--purple); }
+
+/* ---------------------------------------------------- Diff Viewer */
+.diff-block {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 150px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+
+.diff-add { color: var(--green); }
+.diff-del { color: var(--red); }
+.diff-meta { color: var(--muted); }
+
+/* ------------------------------------------------- Activity Feed */
+.activity-feed {
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activity-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: var(--surface2);
+  border-left: 3px solid var(--border);
+  font-size: 12px;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.activity-item--seeded   { border-color: var(--yellow); }
+.activity-item--started  { border-color: var(--accent); }
+.activity-item--completed{ border-color: var(--green); }
+.activity-item--reset    { border-color: var(--red); }
+.activity-item--immune   { border-color: var(--purple); }
+
+.activity-time { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.activity-msg  { color: var(--text); flex: 1; }
+
+/* ---------------------------------------- Confidence Score Bar */
+.confidence-bar-wrap { margin-top: 8px; }
+.confidence-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.confidence-bar {
+  height: 6px;
+  background: var(--surface2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.confidence-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--green);
+  transition: width 0.5s ease;
+}
+
+/* ---------------------------------------- Metrics Row */
+.metrics-row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.metric-chip {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.metric-chip span { color: var(--muted); }
