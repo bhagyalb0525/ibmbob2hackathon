@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { calculateCart, CartItem } from '../services/cart';
+import { applyVoucherAndCalculateTotals, CartItem, VoucherCode } from '../services/cart';
 import { processPayment } from '../services/payment';
 import { logger } from '../utils/logger';
 
@@ -9,9 +9,10 @@ interface CheckoutRequestBody {
   orderId?: string;
   items?: CartItem[];
   currency?: string;
-  discountPercent?: number;
+  voucher?: VoucherCode | null;
   taxRate?: number;
   paymentMethod?: string;
+  expectedTotal?: number;
 }
 
 /**
@@ -19,7 +20,7 @@ interface CheckoutRequestBody {
  * Validates cart contents, calculates totals, and charges payment.
  */
 checkoutRouter.post('/', async (req: Request<Record<string, never>, unknown, CheckoutRequestBody>, res: Response): Promise<void> => {
-  const { orderId, items, currency = 'USD', discountPercent = 0, taxRate = 0, paymentMethod } = req.body;
+  const { orderId, items, currency = 'USD', voucher = null, taxRate = 0, paymentMethod, expectedTotal } = req.body;
   const currentOrderId = orderId || `ord_${Date.now()}`;
 
   logger.info('Checkout request received', { orderId: currentOrderId, itemsCount: items?.length });
@@ -37,13 +38,18 @@ checkoutRouter.post('/', async (req: Request<Record<string, never>, unknown, Che
 
   try {
     // 2. Cart calculation
-    const cartSummary = calculateCart(items, { discountPercent, taxRate, currency });
+    const cartSummary = applyVoucherAndCalculateTotals(items, voucher, currency, taxRate);
 
-    // 3. Payment execution
+    // 3. Precision truncation verification (simulating payment gateway pre-auth mismatch)
+    if (expectedTotal !== undefined && Math.abs(cartSummary.grandTotal - expectedTotal) >= 0.01) {
+      throw new Error(`PAYMENT_MISMATCH_ERROR: Expected total ${expectedTotal} but calculated ${cartSummary.grandTotal}`);
+    }
+
+    // 4. Payment execution
     const paymentResult = await processPayment({
       orderId: currentOrderId,
-      amount: cartSummary.totalAmount,
-      currency: cartSummary.currency,
+      amount: cartSummary.grandTotal,
+      currency: currency,
       paymentMethod,
     });
 
@@ -67,7 +73,7 @@ checkoutRouter.post('/', async (req: Request<Record<string, never>, unknown, Che
     logger.info('Checkout succeeded', {
       orderId: currentOrderId,
       transactionId: paymentResult.transactionId,
-      totalAmount: cartSummary.totalAmount,
+      totalAmount: cartSummary.grandTotal,
     });
 
     res.status(200).json({

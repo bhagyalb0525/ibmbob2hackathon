@@ -1,11 +1,78 @@
-// Lightweight SSE broker relaying agent stage updates from the orchestrator to the browser.
-// No external dependencies — uses Node's built-in http module + a simple in-memory state store.
+// Dashboard server — static assets + SSE broker for the REAL REGEN pipeline.
+//
+// Phase 3: a real ShopFlow checkout failure produces a real IncidentPayload,
+// which is handed to the EXISTING agents/orchestrator.ts. The orchestrator
+// runs in a child process (dashboard/orchestrator-runner.js) because
+// VerificationAgent executes the suite with a blocking spawnSync, which would
+// otherwise freeze this server's event loop — and with it /events — for the
+// whole verification stage. Only the standard library is used here; the
+// orchestrator's TypeScript is loaded by the child, not by this process.
 
 'use strict';
 
 const http = require('http');
 const fs   = require('fs');
 const path = require('path');
+const net   = require('net');
+const { fork, spawn } = require('child_process');
+
+const REPO_ROOT   = path.resolve(__dirname, '..');
+const RUNNER_PATH = path.join(__dirname, 'orchestrator-runner.js');
+
+// ---------------------------------------------------------------------------
+// Phase 4: runtime immune-memory persistence
+//
+// ImmuneMemoryStore.recordFix() is intentionally in-memory only. Each runner
+// fork is a fresh process, so the entry would be lost. We capture the new
+// entry via IPC (kind:'memoryEntry') and persist it to a local JSON file.
+// Subsequent forks receive that file as storePath so ImmuneMemoryStore loads
+// it at construction time and the warm-path findMatch() genuinely succeeds.
+// ---------------------------------------------------------------------------
+const RUNTIME_MEMORY_PATH = path.join(__dirname, '.regen-memory-runtime.json');
+
+function loadRuntimeMemory() {
+  try {
+    const raw = fs.readFileSync(RUNTIME_MEMORY_PATH, 'utf8');
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;  // file absent or invalid — runner will use its own seed
+  }
+}
+
+function saveRuntimeMemory(entries) {
+  try {
+    fs.writeFileSync(RUNTIME_MEMORY_PATH, JSON.stringify(entries, null, 2), 'utf8');
+    console.log(`[dashboard] immune memory persisted to ${RUNTIME_MEMORY_PATH} (${entries.length} entr${entries.length === 1 ? 'y' : 'ies'})`);
+  } catch (err) {
+    console.error('[dashboard] could not persist immune memory:', err.message);
+  }
+}
+
+/**
+ * Merge a new memory entry into the runtime store file.
+ * If an entry with the same id already exists it is replaced (idempotent).
+ */
+function persistMemoryEntry(entry) {
+  // Load what is already on disk (may include entries from previous runs)
+  let existing = loadRuntimeMemory();
+  if (!Array.isArray(existing)) {
+    // First write: start with the seed entries so the runtime file is self-contained
+    try {
+      const seedRaw = fs.readFileSync(path.join(REPO_ROOT, 'memory', 'seed_memory.json'), 'utf8');
+      existing = JSON.parse(seedRaw);
+    } catch (_) {
+      existing = [];
+    }
+  }
+  const idx = existing.findIndex(e => e.id === entry.id);
+  if (idx !== -1) {
+    existing[idx] = entry;
+  } else {
+    existing.push(entry);
+  }
+  saveRuntimeMemory(existing);
+  return existing;
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -51,140 +118,475 @@ function makeFreshState(incidentId) {
   };
 }
 
-let pipelineState = makeFreshState('inc_demo_001');
+let pipelineState = makeFreshState('inc_idle');
 
-function pushHistory(stage, message, agent) {
-  pipelineState.history.push({
-    stage,
+// ---------------------------------------------------------------------------
+// Real orchestrator execution (Phase 3)
+//
+// A real ShopFlow failure hands its real IncidentPayload to the EXISTING
+// agents/orchestrator.ts. Nothing about the run is simulated: the stage
+// transitions, agent results, patch, confidence and verification outcome all
+// come from the real pipeline via its existing emitStateUpdate() hook.
+// ---------------------------------------------------------------------------
+
+/** @type {import('child_process').ChildProcess | null} */
+let pipelineChild = null;
+let pipelineStatus = 'idle';   // idle | running | resolved | failed
+let lastPipelineError = null;
+
+/**
+ * Relay a real pipeline state over the existing SSE transport.
+ *
+ * `immune` is a sibling field of `state` carrying the real warm-path facts
+ * (matched entry, reused diff, match score, lookup latency, skipped agents).
+ * It is optional and only present on a genuine immune-memory hit, so the
+ * existing event shape and shared/types.ts contracts stay untouched.
+ */
+function broadcastStage(state, immune) {
+  pipelineState = state;
+  const event = { type: 'STAGE_CHANGED', timestamp: new Date().toISOString(), state };
+  if (immune) event.immune = immune;
+  broadcast(event);
+}
+
+/** A local FAILED view — the orchestrator's own state is never written to. */
+function failedState(incident, message) {
+  const s = makeFreshState(incident ? incident.incidentId : 'inc_failed');
+  s.stage = 'FAILED';
+  s.incident = incident || null;
+  s.history = [{ stage: 'FAILED', timestamp: new Date().toISOString(), message }];
+  return s;
+}
+
+/**
+ * Run the REAL orchestrator for a REAL incident and relay its real state onto
+ * the existing SSE transport.
+ *
+ * The incident goes to the Orchestrator CONSTRUCTOR — the existing
+ * runPipeline() signature takes no arguments.
+ */
+function runRealPipeline(incident) {
+  if (pipelineChild) {
+    console.warn(`[dashboard] a real pipeline run is already in progress — ignoring ${incident.incidentId}`);
+    return Promise.resolve(null);
+  }
+
+  pipelineStatus = 'running';
+  lastPipelineError = null;
+
+  // Announce the real incident on a fresh local IDLE state that carries the
+  // real payload. The orchestrator's state object is never mutated from here.
+  const seeded = makeFreshState(incident.incidentId);
+  seeded.incident = incident;
+  pipelineState = seeded;
+  broadcast({
+    type: 'INCIDENT_SEEDED',
     timestamp: new Date().toISOString(),
-    agent: agent || undefined,
-    message,
+    message:
+      `Real incident detected: ${incident.errorSignature} — ` +
+      `${incident.serviceName} ${incident.endpoint} (HTTP ${incident.httpStatus})`,
+    state: seeded,
+  });
+
+  // Phase 4: pass the runtime memory file path so the orchestrator loads the
+  // previously recorded fix from the cold-path run and can match it on the
+  // warm path. If no runtime file exists yet, the runner falls back to the
+  // seed file — correct behaviour for the very first (cold) run.
+  const runtimeMemory = loadRuntimeMemory();
+  const runnerOptions = runtimeMemory
+    ? { storePath: RUNTIME_MEMORY_PATH }
+    : {};   // first run: no runtime file yet, use seed defaults
+
+  let child;
+  try {
+    child = fork(RUNNER_PATH, [], {
+      cwd: REPO_ROOT,
+      // Loads the orchestrator's TypeScript the same way `npm run run:pipeline`
+      // does: ts-node for .ts, tsconfig-paths for the @shared/* aliases.
+      execArgv: ['-r', 'ts-node/register/transpile-only', '-r', 'tsconfig-paths/register'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      env: { ...process.env },
+    });
+  } catch (err) {
+    pipelineStatus = 'failed';
+    lastPipelineError = (err && err.message) || String(err);
+    console.error('[dashboard] could not start the orchestrator runner:', lastPipelineError);
+    broadcastStage(failedState(incident, lastPipelineError));
+    return Promise.resolve(null);
+  }
+
+  pipelineChild = child;
+  console.log(`[dashboard] real REGEN pipeline started for ${incident.incidentId} (runner pid ${child.pid})`);
+
+  // Surface the pipeline's own console output in the dashboard terminal.
+  if (child.stdout) child.stdout.on('data', d => process.stdout.write(`  [regen] ${d}`));
+  if (child.stderr) child.stderr.on('data', d => process.stderr.write(`  [regen!] ${d}`));
+
+  return new Promise(resolve => {
+    child.on('message', msg => {
+      if (!msg) return;
+
+      if (msg.kind === 'state') {
+        broadcastStage(msg.state, msg.immune);
+        if (msg.immune) {
+          console.log(
+            `[dashboard] immune match: entry=${msg.immune.entry && msg.immune.entry.id} ` +
+            `score=${Number(msg.immune.confidence).toFixed(3)} ` +
+            `threshold=${msg.immune.threshold} ` +
+            `latency=${msg.immune.memoryLatencyMs}ms ` +
+            `fixApplied=${msg.immune.fixApplied} ` +
+            `entries=${msg.immune.entryCount}`
+          );
+        }
+        if (msg.state && msg.state.stage === 'RESOLVED') {
+          pipelineStatus = 'resolved';
+          onVerifiedFixApplied(msg.state).catch(e =>
+            console.error('[dashboard] post-fix handling failed:', e.message));
+        } else if (msg.state && msg.state.stage === 'IMMUNE_RECOVERED') {
+          // Warm path: the orchestrator has already written the stored verified
+          // fix to disk. The live service still has to be restarted to serve it.
+          pipelineStatus = 'resolved';
+          onImmuneRecovered(msg.immune).catch(e =>
+            console.error('[dashboard] warm-path handling failed:', e.message));
+        } else if (msg.state && msg.state.stage === 'FAILED') {
+          pipelineStatus = 'failed';
+        }
+        return;
+      }
+
+      if (msg.kind === 'log') {
+        console.log(`  [regen] ${msg.message}`);
+        return;
+      }
+
+      if (msg.kind === 'error') {
+        lastPipelineError = msg.message;
+        pipelineStatus = 'failed';
+        console.error(`[dashboard] real pipeline error: ${msg.message}`);
+        return;
+      }
+
+      // Phase 4: persist the new verified memory entry so the next run can
+      // find it via findMatch() and take the IMMUNE_RECOVERED fast path.
+      if (msg.kind === 'memoryEntry') {
+        console.log(`[dashboard] new verified memory entry received: ${msg.entry && msg.entry.id}`);
+        persistMemoryEntry(msg.entry);
+        return;
+      }
+
+      if (msg.kind === 'done') {
+        broadcastStage(msg.state);
+        if (msg.state && msg.state.stage === 'RESOLVED') pipelineStatus = 'resolved';
+        else if (msg.state && msg.state.stage === 'IMMUNE_RECOVERED') pipelineStatus = 'resolved';
+        else if (pipelineStatus !== 'failed') pipelineStatus = 'failed';
+        resolve(msg.state);
+      }
+    });
+
+    child.on('error', err => {
+      pipelineStatus = 'failed';
+      lastPipelineError = err.message;
+      console.error('[dashboard] orchestrator runner error:', err.message);
+      broadcastStage(failedState(incident, err.message));
+    });
+
+    child.on('exit', (code, signal) => {
+      pipelineChild = null;
+      if (pipelineStatus === 'running') {
+        pipelineStatus = code === 0 ? 'resolved' : 'failed';
+        if (code !== 0) {
+          lastPipelineError = lastPipelineError ||
+            `orchestrator exited with code ${code}${signal ? ` (${signal})` : ''}`;
+        }
+      }
+      console.log(`[dashboard] real pipeline finished — status=${pipelineStatus}, exit=${code}${signal ? `, ${signal}` : ''}`);
+      resolve(null);
+    });
+
+    child.send({ kind: 'run', incident, options: runnerOptions });
   });
 }
 
 // ---------------------------------------------------------------------------
-// Demo incident payload (mirrors IncidentPayload from shared/types.ts)
+// Demo service lifecycle
+//
+// A verified REGEN fix is written to demo_service/src/services/cart.ts on
+// disk, but `npm run start:demo` compiles that module once at start-up. The
+// live process would therefore keep serving the pre-fix code and keep
+// returning HTTP 500. Reloading it is what lets the recovered checkout
+// genuinely return HTTP 200.
 // ---------------------------------------------------------------------------
-const DEMO_INCIDENT = {
-  incidentId:     'inc_demo_001',
-  timestamp:      new Date().toISOString(),
-  serviceName:    'checkout-service',
-  environment:    'demo',
-  severity:       'HIGH',
-  endpoint:       '/api/checkout',
-  httpStatus:     500,
-  errorSignature: 'TypeError:Cannot read properties of undefined reading price',
-  errorMessage:   "TypeError: Cannot read properties of undefined (reading 'price')",
-  stackTrace:     'at calculateCart (cart.ts:54:36)\n at checkoutRouter (checkout.ts:41:22)',
-  culpritPayload: { items: [{ id: 'x', name: 'test', quantity: 1 }] },
-  recentCommits:  [{ hash: 'a1b2c3d', author: 'dev', message: 'refactor cart', timestamp: new Date().toISOString() }],
-  metrics: {
-    errorRate:             0.22,
-    affectedUsersPercent:  22,
-    p99LatencyMs:          1840,
-    totalRequests:         500,
-    failedRequests:        110,
-  },
-};
+let managedDemo = null;
 
-// ---------------------------------------------------------------------------
-// Simulated pipeline replay
-// Runs a full incident → resolution cycle to provide demo SSE events
-// ---------------------------------------------------------------------------
-const STAGES = [
-  { stage: 'MEMORY_LOOKUP',   agent: 'immune_memory', ms: 600,  message: 'Searching immune memory for matching signature…' },
-  { stage: 'TRIAGING',        agent: 'triage',         ms: 1200, message: 'Triage agent analysing root cause…' },
-  { stage: 'DIAGNOSING',      agent: 'diagnostic',     ms: 1000, message: 'Diagnostic agent reproducing regression…' },
-  { stage: 'TREATING',        agent: 'treatment',      ms: 1500, message: 'Treatment agent generating patch…' },
-  { stage: 'VERIFYING',       agent: 'verification',   ms: 1000, message: 'Verification agent running test suite…' },
-  { stage: 'SCRIBING',        agent: 'scribe',         ms: 800,  message: 'Scribe agent composing post-mortem…' },
-  { stage: 'RESOLVED',        agent: null,             ms: 400,  message: 'Incident resolved. All agents completed successfully.' },
-];
+function demoPort() {
+  try { return Number(new URL(DEMO_SERVICE_URL).port) || 3001; } catch (_) { return 3001; }
+}
 
-let replayTimer = null;
+function isDemoUp() {
+  return new Promise(resolve => {
+    const socket = net.connect({ host: '127.0.0.1', port: demoPort() });
+    const done = ok => { socket.destroy(); resolve(ok); };
+    socket.setTimeout(1000);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
+}
 
-function runReplay(immuneMatch) {
-  if (replayTimer) clearTimeout(replayTimer);
-
-  const startMs = Date.now();
-  pipelineState = makeFreshState('inc_demo_001');
-  pipelineState.incident   = DEMO_INCIDENT;
-  pipelineState.stage      = 'MEMORY_LOOKUP';
-  pipelineState.isImmuneMatch = !!immuneMatch;
-
-  // INCIDENT_SEEDED event
-  pushHistory('MEMORY_LOOKUP', 'Incident seeded — starting pipeline');
-  broadcast({ type: 'INCIDENT_SEEDED', timestamp: new Date().toISOString(), state: { ...pipelineState } });
-
-  let delay = 0;
-  const stageList = immuneMatch
-    ? [
-        { stage: 'MEMORY_LOOKUP', agent: 'immune_memory', ms: 400, message: 'Immune memory match found — instant recovery' },
-        { stage: 'IMMUNE_RECOVERED', agent: null, ms: 300, message: 'Incident resolved via immune memory (no agents needed).' },
-      ]
-    : STAGES;
-
-  for (let i = 0; i < stageList.length; i++) {
-    const step = stageList[i];
-    delay += (i === 0 ? 200 : stageList[i - 1].ms);
-
-    replayTimer = setTimeout(() => {
-      pipelineState.stage       = step.stage;
-      pipelineState.activeAgent = step.agent || undefined;
-      pipelineState.lastUpdated = new Date().toISOString();
-      pushHistory(step.stage, step.message, step.agent);
-
-      if (step.stage === 'MEMORY_LOOKUP' && immuneMatch) {
-        pipelineState.memoryLatencyMs = 38;
-      }
-      if (step.stage === 'RESOLVED' || step.stage === 'IMMUNE_RECOVERED') {
-        pipelineState.totalDurationMs = Date.now() - startMs;
-        pipelineState.activeAgent = undefined;
-        // Add mock results for resolved
-        if (!immuneMatch) {
-          pipelineState.results = {
-            triage: {
-              agentName: 'triage', status: 'success',
-              startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), durationMs: 1200,
-              summary: 'Root cause identified in cart.ts line 54',
-              rootCauseFile: 'demo_service/src/services/cart.ts',
-              suspectFunction: 'calculateCart',
-              lineStart: 54, lineEnd: 58,
-              culpritCommit: 'a1b2c3d',
-              blastRadiusScore: 0.35,
-              explanation: 'Undefined item in cart array causes price access to throw',
-            },
-            treatment: {
-              agentName: 'treatment', status: 'success',
-              startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), durationMs: 1500,
-              summary: 'Patch generated: add optional chaining on item.price',
-              targetFile: 'demo_service/src/services/cart.ts',
-              gitDiff: '- const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);\n+ const subtotal = items.reduce((sum, i) => sum + (i?.price ?? 0) * (i?.quantity ?? 0), 0);',
-              patchedCode: 'const subtotal = items.reduce((sum, i) => sum + (i?.price ?? 0) * (i?.quantity ?? 0), 0);',
-              confidenceScore: 0.94,
-              scoreBreakdown: { blastRadiusScore: 0.35, testSpecificityScore: 0.40, historicalSuccessScore: 0.25 },
-              explanation: 'Optional chaining prevents runtime TypeError when item is undefined',
-            },
-            verification: {
-              agentName: 'verification', status: 'success',
-              startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), durationMs: 1000,
-              summary: '7/7 tests passed, regression test green',
-              totalTests: 7, passedTests: 7, failedTests: 0,
-              regressionTestPassed: true, baselineUnitTestsPassed: true,
-              suiteOutput: 'PASS demo_service/tests/unit/cart.test.ts\n  7 passed, 0 failed',
-              patchApplied: true,
-            },
-          };
-        }
-      }
-
-      const eventType = step.agent
-        ? (i < stageList.length - 1 ? 'AGENT_STARTED' : 'AGENT_COMPLETED')
-        : 'STAGE_CHANGED';
-
-      broadcast({ type: eventType, timestamp: new Date().toISOString(), state: { ...pipelineState, results: { ...pipelineState.results } } });
-    }, delay);
+async function waitForDemoHealth(timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const r = await forwardToDemoService('GET', '/health');
+    if (r.ok && r.json && r.json.status === 'ok') return true;
+    await new Promise(res => setTimeout(res, 400));
   }
+  return false;
+}
+
+function spawnDemoService() {
+  const child = spawn('npx ts-node demo_service/src/app.ts', [], {
+    cwd: REPO_ROOT,
+    shell: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, DEMO_SERVICE_PORT: String(demoPort()) },
+  });
+  if (child.stdout) child.stdout.on('data', d => process.stdout.write(`  [demo] ${d}`));
+  if (child.stderr) child.stderr.on('data', d => process.stderr.write(`  [demo!] ${d}`));
+  child.on('exit', code => {
+    console.log(`[dashboard] managed demo service exited (code ${code})`);
+    if (managedDemo === child) managedDemo = null;
+  });
+  return child;
+}
+
+/** Take over demo-service start-up only when nothing else is serving it. */
+async function ensureDemoService() {
+  if (process.env.MANAGE_DEMO_SERVICE === '0') return;
+  if (managedDemo) return;
+  if (await isDemoUp()) {
+    console.log(`[dashboard] demo service already listening on :${demoPort()} — leaving it untouched`);
+    return;
+  }
+  console.log(`[dashboard] starting demo service on :${demoPort()} (managed by this server)`);
+  managedDemo = spawnDemoService();
+  const healthy = await waitForDemoHealth();
+  console.log(healthy
+    ? '[dashboard] demo service is healthy'
+    : '[dashboard] demo service did not become healthy — check the log above');
+}
+
+/**
+ * Reload the demo service after a cold-path VERIFIED fix so the corrected
+ * source is the code actually serving checkouts. Only a process this server
+ * started is ever restarted — an externally launched `npm run start:demo`
+ * is never killed.
+ */
+async function onVerifiedFixApplied(state) {
+  const v = state.results && state.results.verification;
+  if (!v || !v.patchApplied || !v.regressionTestPassed) return;
+
+  console.log('[dashboard] verified fix is on disk — reloading demo service so it serves the fix');
+  await reloadManagedDemo();
+}
+
+/**
+ * Phase 4 — warm path recovery.
+ *
+ * On a real immune-memory hit the orchestrator has already written the stored
+ * verified diff to disk (agents/orchestrator.ts → applyImmuneRecovery()).
+ * The live service is still running the pre-fix code, so it must be restarted
+ * for the recovery to be real. If the stored fix was not applied we say so
+ * instead of restarting and claiming a recovery that did not happen.
+ */
+async function onImmuneRecovered(immune) {
+  if (immune && immune.fixApplied === false) {
+    console.error(
+      '[dashboard] IMMUNE_RECOVERED but the stored fix was NOT applied: ' +
+      `${immune.error || 'unknown reason'} — not restarting the demo service`
+    );
+    return;
+  }
+
+  const target = immune && immune.targetFile ? immune.targetFile : 'the root-cause file';
+  console.log(`[dashboard] IMMUNE_RECOVERED — stored fix is live in ${target}, reloading demo service`);
+  await reloadManagedDemo();
+}
+
+/**
+ * Restart the managed demo service, or advise the operator when it was
+ * launched externally.
+ */
+async function reloadManagedDemo() {
+  if (managedDemo) {
+    managedDemo.kill();
+    managedDemo = null;
+    await new Promise(res => setTimeout(res, 800));
+    managedDemo = spawnDemoService();
+    const healthy = await waitForDemoHealth();
+    console.log(healthy
+      ? '[dashboard] demo service reloaded — the next ShopFlow checkout runs the verified code'
+      : '[dashboard] demo service did not come back up after reload');
+    return;
+  }
+
+  console.log(
+    `[dashboard] NOTE: the demo service on :${demoPort()} was started outside this server, so it ` +
+    'was left running. Restart it (npm run start:demo) to serve the verified fix, or start the ' +
+    'dashboard with MANAGE_DEMO_SERVICE=1 to have it reloaded automatically.'
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — ShopFlow → demo_service proxy
+//
+// The browser only ever talks to this server (one origin, no CORS). This
+// module forwards ShopFlow checkout calls to the EXISTING demo_service and,
+// on a real failure, converts the real error into the existing
+// IncidentPayload shape from shared/types.ts (which is NOT modified).
+// No new backend, no new dependency — Node's built-in http/https only.
+// ---------------------------------------------------------------------------
+const DEMO_SERVICE_URL = process.env.DEMO_SERVICE_URL || 'http://127.0.0.1:3001';
+
+/** In-memory handoff for Phase 3 (no DB / Redis / file persistence). */
+let currentIncident = null;
+
+/** Real service name, read once from the demo service's own /health. */
+let upstreamServiceName = null;
+
+/** Forward a JSON request to the demo service. Never throws. */
+function forwardToDemoService(method, path, bodyObj) {
+  return new Promise(resolve => {
+    let target;
+    try {
+      target = new URL(DEMO_SERVICE_URL + path);
+    } catch (_) {
+      return resolve({ ok: false, transportError: 'DEMO_SERVICE_URL is not a valid URL', status: 502 });
+    }
+
+    const payload = bodyObj === undefined ? null : Buffer.from(JSON.stringify(bodyObj), 'utf8');
+    const transport = target.protocol === 'https:' ? require('https') : require('http');
+
+    const req = transport.request(
+      {
+        hostname: target.hostname,
+        port:     target.port || (target.protocol === 'https:' ? 443 : 80),
+        path:     target.pathname + target.search,
+        method,
+        headers:  payload
+          ? { 'Content-Type': 'application/json', 'Content-Length': payload.length }
+          : { Accept: 'application/json' },
+        timeout: 10000,
+      },
+      res => {
+        let raw = '';
+        res.setEncoding('utf8');
+        res.on('data', d => { raw += d; });
+        res.on('end', () => {
+          let json = null;
+          try { json = JSON.parse(raw); } catch (_) { /* non-JSON body */ }
+          resolve({ ok: true, status: res.statusCode, json, raw });
+        });
+      }
+    );
+
+    req.on('timeout', () => { req.destroy(new Error('upstream timeout')); });
+    req.on('error', err => {
+      resolve({
+        ok: false,
+        transportError: `Cannot reach demo_service at ${DEMO_SERVICE_URL} (${err.code || err.message}). ` +
+                        'Start it with: npm run start:demo',
+        status: 502,
+      });
+    });
+
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+/** Read the demo service's real `service` name (cached after first success). */
+async function resolveServiceName() {
+  if (upstreamServiceName) return upstreamServiceName;
+  const r = await forwardToDemoService('GET', '/health');
+  if (r.ok && r.json && r.json.service) {
+    upstreamServiceName = r.json.service;
+  }
+  return upstreamServiceName;
+}
+
+/**
+ * Normalize a real error message into the canonical signature string the
+ * existing TriageAgent ERROR_SIGNATURE_MAP understands.
+ * "PAYMENT_MISMATCH_ERROR: Expected total … but calculated …" -> "PAYMENT_MISMATCH_ERROR"
+ */
+function signatureFromFailure(message, status, errorField) {
+  const source = String(message || errorField || '').trim();
+  if (source) {
+    const head = source.split(':')[0].trim();
+    if (head && head.length <= 120) return head;
+  }
+  return `HTTP_${status}_${String(errorField || 'UNKNOWN').replace(/\s+/g, '_').toUpperCase()}`;
+}
+
+function severityForStatus(status) {
+  if (status >= 500) return 'HIGH';
+  if (status >= 400) return 'MEDIUM';
+  return 'LOW';
+}
+
+/**
+ * Build an IncidentPayload (shared/types.ts:27-46) from the REAL failure.
+ *
+ * Field provenance:
+ *   incidentId      derived from the real orderId the service echoed back
+ *   timestamp       real capture time
+ *   serviceName     real value from the service's own /health
+ *   environment     'demo' — this IS the demo service
+ *   severity        derived from the real HTTP status
+ *   endpoint        real upstream path that failed
+ *   httpStatus      real upstream status
+ *   errorSignature  normalized from the real error message
+ *   errorMessage    real `message` (or `error`) field from the response body
+ *   stackTrace      NOT available upstream — see note below
+ *   culpritPayload  the exact request body that was forwarded
+ *   recentCommits   OMITTED — not derivable from a checkout response
+ *   metrics         ZEROS — demo_service exposes no traffic metrics
+ */
+function buildIncidentFromFailure(result, forwardedBody) {
+  const body    = result.json || {};
+  const status  = result.status;
+  const message = body.message || body.error || 'Unknown checkout failure';
+  const orderId = body.orderId || (forwardedBody && forwardedBody.orderId) || `shopflow_${Date.now()}`;
+
+  return {
+    incidentId:     `inc_${orderId}`,
+    timestamp:      new Date().toISOString(),
+    serviceName:    upstreamServiceName || 'checkout-service',
+    environment:    'demo',
+    severity:       severityForStatus(status),
+    endpoint:       '/api/checkout',
+    httpStatus:     status,
+    errorSignature: signatureFromFailure(message, status, body.error),
+    errorMessage:   message,
+    // The demo service catches the throw inside its route error handler
+    // (routes/checkout.ts:85-94) and returns only err.message — no inner stack
+    // frame is ever exposed to HTTP clients. We report that truthfully rather
+    // than fabricating one. TriageAgent resolves the file from errorSignature.
+    stackTrace:
+      `${signatureFromFailure(message, status, body.error)} raised while handling POST /api/checkout ` +
+      `in demo_service and converted to HTTP ${status} by the route error handler ` +
+      `(demo_service/src/routes/checkout.ts:85-94). ` +
+      'The demo service does not propagate an inner stack trace to HTTP clients.',
+    culpritPayload: forwardedBody,
+    // recentCommits intentionally omitted: a checkout response carries no VCS data.
+    metrics: {
+      errorRate:            0,   // not observable from a single checkout response
+      affectedUsersPercent: 0,
+      p99LatencyMs:         0,
+      totalRequests:        0,
+      failedRequests:       0,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -239,27 +641,131 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ------ Trigger demo replay ------
+  // ------ Legacy trigger endpoint ------
+  // The fake replay is gone: REGEN is now driven by real ShopFlow incidents.
   if (url === '/api/trigger' && req.method === 'POST') {
     let body = '';
     req.on('data', d => (body += d));
     req.on('end', () => {
       let immuneMatch = false;
       try { immuneMatch = !!JSON.parse(body).immuneMatch; } catch (_) {}
-      runReplay(immuneMatch);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, immuneMatch }));
+      res.end(JSON.stringify({
+        ok: true,
+        mode: 'real-orchestrator',
+        running: !!pipelineChild,
+        lastIncidentId: currentIncident ? currentIncident.incidentId : null,
+        message: immuneMatch
+          ? 'Immune-memory recovery is reached by a real memory hit. Replay the same real incident from ShopFlow to exercise it.'
+          : (pipelineChild
+              ? 'A real pipeline run is already in progress.'
+              : 'REGEN now runs from real incidents. Complete a ShopFlow checkout that fails to start a real pipeline run.'),
+      }));
     });
     return;
   }
 
   // ------ Reset pipeline state ------
   if (url === '/api/reset' && req.method === 'POST') {
-    if (replayTimer) clearTimeout(replayTimer);
+    // if (replayTimer) clearTimeout(replayTimer);
     pipelineState = makeFreshState('inc_demo_001');
     broadcast({ type: 'PIPELINE_RESET', timestamp: new Date().toISOString(), state: pipelineState });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  // ------ ShopFlow: real checkout proxy (Phase 2) ------
+  // The browser never calls :3001 directly — this keeps one browser origin
+  // and avoids needing CORS on the demo service (which must stay unmodified).
+  if (url === '/api/shopflow/checkout' && req.method === 'POST') {
+    let body = '';
+    req.on('data', d => (body += d));
+    req.on('end', async () => {
+      let forwarded;
+      try {
+        forwarded = JSON.parse(body);
+      } catch (_) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid JSON in request body' }));
+        return;
+      }
+
+      const result = await forwardToDemoService('POST', '/api/checkout', forwarded);
+
+      // Upstream unreachable (service not running) — surface it clearly.
+      if (!result.ok) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: result.transportError }));
+        return;
+      }
+
+      const upstreamBody = result.json || {};
+
+      // A real backend failure (>=400) becomes a real IncidentPayload.
+      if (result.status >= 400) {
+        await resolveServiceName();
+        const incident = buildIncidentFromFailure(result, forwarded);
+        currentIncident = incident;
+        console.log(`\n[dashboard] REAL incident captured from demo_service (HTTP ${result.status})`);
+        console.log(`[dashboard]   incidentId     : ${incident.incidentId}`);
+        console.log(`[dashboard]   serviceName    : ${incident.serviceName}`);
+        console.log(`[dashboard]   endpoint       : ${incident.endpoint}`);
+        console.log(`[dashboard]   errorSignature : ${incident.errorSignature}`);
+        console.log(`[dashboard]   errorMessage   : ${incident.errorMessage}\n`);
+        
+        // TRIGGER REAL ORCHESTRATOR
+        runRealPipeline(incident).catch(err => console.error('[dashboard] Unhandled orchestrator err:', err));
+      }
+
+      // Pass the upstream status through unchanged so the browser sees the
+      // real 500 / 402 / 400 — never a rewritten status.
+      res.writeHead(result.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ...upstreamBody,
+        // Non-invasive additions so the browser UI can show real identifiers.
+        _proxy: {
+          upstream: `${DEMO_SERVICE_URL}/api/checkout`,
+          status: result.status,
+          incidentCaptured: result.status >= 400 ? currentIncident.incidentId : null,
+        },
+      }));
+    });
+    return;
+  }
+
+  // ------ ShopFlow: real backend health (lets the operator confirm wiring) ------
+  if (url === '/api/shopflow/health' && req.method === 'GET') {
+    forwardToDemoService('GET', '/health').then(async result => {
+      if (!result.ok) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: result.transportError }));
+        return;
+      }
+      await resolveServiceName();
+      res.writeHead(result.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.json || {}));
+    });
+    return;
+  }
+
+  // ------ Phase 3 handoff: the real captured IncidentPayload ------
+  if (url === '/api/shopflow/incident' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ incident: currentIncident }));
+    return;
+  }
+
+  // ------ Real pipeline run status (SSE carries the same information) ------
+  if (url === '/api/shopflow/pipeline' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: pipelineStatus,
+      running: !!pipelineChild,
+      error: lastPipelineError,
+      demoServiceManaged: !!managedDemo,
+      state: pipelineState,
+    }));
     return;
   }
 
@@ -286,5 +792,8 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`[dashboard] Server running at http://localhost:${PORT}`);
   console.log(`[dashboard] SSE stream   at http://localhost:${PORT}/events`);
-  console.log(`[dashboard] Trigger demo: POST http://localhost:${PORT}/api/trigger`);
+  console.log(`[dashboard] ShopFlow proxy -> ${DEMO_SERVICE_URL}/api/checkout`);
+  console.log('[dashboard] REGEN runs the real orchestrator from real ShopFlow incidents');
+  ensureDemoService().catch(err =>
+    console.error('[dashboard] demo service startup failed:', err.message));
 });

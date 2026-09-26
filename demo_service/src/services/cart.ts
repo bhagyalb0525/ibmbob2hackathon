@@ -1,80 +1,68 @@
 /**
  * Baseline Cart Calculation Service
- * Computes item subtotals, promotional discounts, and localized tax totals.
  */
 
 export interface CartItem {
   id: string;
   name: string;
-  price: number;
+  unitPrice: number;
   quantity: number;
-}
-
-export interface CartOptions {
-  discountPercent?: number; // 0 to 100
-  taxRate?: number;         // Decimal rate, e.g. 0.08 for 8%
-  currency?: string;
-}
-
-export interface CartCalculationResult {
-  itemsCount: number;
-  subtotal: number;
-  discountAmount: number;
-  taxAmount: number;
-  totalAmount: number;
   currency: string;
 }
 
-/**
- * Calculates cart totals in a baseline, deterministic manner.
- * 
- * @param items List of items in the cart
- * @param options Calculation options such as discount percentage and tax rate
- * @returns Standardized calculation summary
- */
-export function calculateCart(
+export interface VoucherCode {
+  code: string;
+  discountAmount: number;
+  voucherCurrency: string;
+}
+
+export const EXCHANGE_RATES: Record<string, number> = {
+  'EUR': 1.08,
+  'GBP': 1.25,
+  'JPY': 0.0067,
+  'USD': 1.0
+};
+
+export function convertVoucherDiscount(amount: number, fromCurrency: string, toCurrency: string): number {
+  if (fromCurrency === toCurrency) return amount;
+  
+  const fromRate = EXCHANGE_RATES[fromCurrency] || 1;
+  const toRate = EXCHANGE_RATES[toCurrency] || 1;
+  
+  // Convert to USD first, then to target currency
+  const amountInUsd = amount * fromRate;
+  const amountInTarget = amountInUsd / toRate;
+  
+  // BUG: uses Math.trunc instead of Math.round, causing precision loss
+  return Math.round(amountInTarget);
+}
+
+export function applyVoucherAndCalculateTotals(
   items: CartItem[],
-  options: CartOptions = {}
-): CartCalculationResult {
-  const currency = options.currency || 'USD';
-  const discountPercent = Math.max(0, Math.min(100, options.discountPercent ?? 0));
-  const taxRate = Math.max(0, options.taxRate ?? 0);
-
-  if (!Array.isArray(items) || items.length === 0) {
-    return {
-      itemsCount: 0,
-      subtotal: 0,
-      discountAmount: 0,
-      taxAmount: 0,
-      totalAmount: 0,
-      currency,
-    };
-  }
-
+  voucher: VoucherCode | null,
+  cartCurrency: string,
+  taxRate: number = 0.10
+) {
   let subtotal = 0;
-  let itemsCount = 0;
-
   for (const item of items) {
-    const quantity = Math.max(0, item.quantity || 0);
-    const price = Math.max(0, item.price || 0);
-
-    itemsCount += quantity;
-    subtotal += price * quantity;
+    subtotal += item.unitPrice * item.quantity;
   }
 
-  // Standardize subtotal to currency precision before discounts/taxes
-  const roundedSubtotal = Number(subtotal.toFixed(2));
-  const discountAmount = Number(((roundedSubtotal * discountPercent) / 100).toFixed(2));
-  const discountedSubtotal = Math.max(0, roundedSubtotal - discountAmount);
-  const taxAmount = Number((discountedSubtotal * taxRate).toFixed(2));
-  const totalAmount = Number((discountedSubtotal + taxAmount).toFixed(2));
+  let discountApplied = 0;
+  if (voucher) {
+    discountApplied = convertVoucherDiscount(voucher.discountAmount, voucher.voucherCurrency, cartCurrency);
+    discountApplied = Math.min(discountApplied, subtotal);
+  }
+
+  const taxBase = Math.max(0, subtotal - discountApplied);
+  const tax = Number((taxBase * taxRate).toFixed(2));
+  const grandTotal = Number((taxBase + tax).toFixed(2));
 
   return {
-    itemsCount,
-    subtotal: roundedSubtotal,
-    discountAmount,
-    taxAmount,
-    totalAmount,
-    currency,
+    subtotal,
+    discountApplied,
+    taxBase,
+    tax,
+    grandTotal
   };
 }

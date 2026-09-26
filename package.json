@@ -8,7 +8,7 @@
     "start:demo": "ts-node demo_service/src/app.ts",
     "test:demo": "jest --runInBand demo_service/tests",
     "seed:incident": "bash demo_service/seed_incident.sh",
-    "run:pipeline": "ts-node agents/orchestrator.ts",
+    "run:pipeline": "ts-node -r tsconfig-paths/register agents/orchestrator.ts",
     "build": "tsc --noEmit"
   },
   "keywords": [
@@ -28,6 +28,7 @@
     "jest": "^30.5.2",
     "ts-jest": "^29.4.14",
     "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
     "typescript": "^5.3.3"
   },
   "dependencies": {

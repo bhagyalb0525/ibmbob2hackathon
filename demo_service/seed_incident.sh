@@ -2,30 +2,20 @@
 # =============================================================================
 # seed_incident.sh — Deterministic incident seeder for the checkout service
 #
-# BUG TRIGGER (cart.ts line 67)
+# BUG TRIGGER (cart.ts convertVoucherDiscount)
 # ------------------------------
-# calculateCart divides discountPercent by 100 to convert to a fraction:
-#
-#   discountAmount = (roundedSubtotal * discountPercent) / 100
-#
-# Multi-currency voucher systems encode discounts on the 0–1 scale (e.g. 0.20
-# for 20%).  When that value arrives at checkout.ts the route passes it
-# unchanged to calculateCart, which divides by 100 a second time, producing a
-# discount that is 100× too small.  The near-unchanged totalAmount is then
-# passed to processPayment, which throws on the semantically invalid amount,
-# and the catch block in checkout.ts returns HTTP 500.
+# convertVoucherDiscount uses Math.trunc() instead of Math.round() when
+# converting exchange rates, causing the discount applied to be slightly lower
+# than expected. The frontend calculates the correct expectedTotal using proper
+# rounding, but the backend calculates an inflated total.
+# This causes the checkout route to throw a PAYMENT_MISMATCH_ERROR (HTTP 500).
 #
 # EXPECTED RESULTS
-#   Requests 1–5   NORMAL   discountPercent on 0–100 scale  → HTTP 200
-#   Requests 6–10  INCIDENT discountPercent on 0–1 scale    → HTTP 500
-#
-# USAGE
-#   Start the service first, then run this script:
-#     npm run start:demo          (from repo root)
-#     bash demo_service/seed_incident.sh
+#   Requests 1–8   NORMAL   Same currency vouchers      → HTTP 200
+#   Requests 9–10  INCIDENT Multi-currency voucher      → HTTP 500
 # =============================================================================
 
-BASE_URL="${CHECKOUT_URL:-http://localhost:3001/api/checkout}"
+BASE_URL="${CHECKOUT_URL:-http://127.0.0.1:3001/api/checkout}"
 SEP="----------------------------------------------------------------------"
 
 echo ""
@@ -35,89 +25,77 @@ echo " Target : $BASE_URL"
 echo "================================================================"
 echo ""
 
-# ---------------------------------------------------------------------------
-# fire <label> <json-payload>
-# Sends one POST and prints the HTTP status + response body.
-# ---------------------------------------------------------------------------
 fire() {
   local label="$1"
   local payload="$2"
   echo "$SEP"
   echo "REQUEST $label"
   echo "Payload : $payload"
-  http_code=$(curl -s -o /tmp/_seed_body.json -w "%{http_code}" \
+  http_code=$(curl -s -o ./_seed_body.json -w "%{http_code}" \
     -X POST "$BASE_URL" \
     -H "Content-Type: application/json" \
     -d "$payload")
-  body=$(cat /tmp/_seed_body.json)
+  body=$(cat ./_seed_body.json)
   echo "HTTP    : $http_code"
   echo "Body    : $body"
   echo ""
 }
 
 # ===========================================================================
-# Requests 1–5  NORMAL — discountPercent on the 0–100 integer scale
-# calculateCart receives e.g. 20 and computes (subtotal * 20) / 100 = 20% off.
-# Expected: HTTP 200 with correct cart totals.
+# Requests 1–8  NORMAL — Same currency vouchers or no voucher
 # ===========================================================================
 
-fire "1/10 [NORMAL USD  — 10% off, no tax]" \
-  '{"orderId":"ord-seed-001","items":[{"id":"sku-A","name":"USB Cable","price":9.99,"quantity":2}],"currency":"USD","discountPercent":10,"taxRate":0,"paymentMethod":"card"}'
+# 1: 2x 9.99 = 19.98. No voucher. Tax 0. expectedTotal = 19.98
+fire "1/10 [NORMAL USD — no voucher]" \
+  '{"orderId":"ord-seed-001","items":[{"id":"sku-A","name":"USB Cable","unitPrice":9.99,"quantity":2,"currency":"USD"}],"currency":"USD","taxRate":0,"expectedTotal":19.98}'
 
-fire "2/10 [NORMAL USD  — 20% off, 8% tax, multi-item]" \
-  '{"orderId":"ord-seed-002","items":[{"id":"sku-B","name":"Keyboard","price":49.99,"quantity":1},{"id":"sku-C","name":"Mouse","price":29.99,"quantity":1}],"currency":"USD","discountPercent":20,"taxRate":0.08,"paymentMethod":"card"}'
+# 2: 1x 49.99, 1x 29.99 = 79.98. USD10OFF -> 10 USD discount. Base = 69.98. Tax 8% = 5.60. Total = 75.58.
+fire "2/10 [NORMAL USD — 10 USD voucher, 8% tax]" \
+  '{"orderId":"ord-seed-002","items":[{"id":"sku-B","name":"Keyboard","unitPrice":49.99,"quantity":1,"currency":"USD"},{"id":"sku-C","name":"Mouse","unitPrice":29.99,"quantity":1,"currency":"USD"}],"currency":"USD","voucher":{"code":"USD10OFF","discountAmount":10,"voucherCurrency":"USD"},"taxRate":0.08,"expectedTotal":75.58}'
 
-fire "3/10 [NORMAL EUR  — 15% off, 5% tax]" \
-  '{"orderId":"ord-seed-003","items":[{"id":"sku-D","name":"Book","price":24.99,"quantity":1}],"currency":"EUR","discountPercent":15,"taxRate":0.05,"paymentMethod":"card"}'
+# 3: 1x 24.99 = 24.99 EUR. EUR5OFF -> 5 EUR discount. Base = 19.99. Tax 5% = 1.00. Total = 20.99
+fire "3/10 [NORMAL EUR — 5 EUR voucher, 5% tax]" \
+  '{"orderId":"ord-seed-003","items":[{"id":"sku-D","name":"Book","unitPrice":24.99,"quantity":1,"currency":"EUR"}],"currency":"EUR","voucher":{"code":"EUR5OFF","discountAmount":5,"voucherCurrency":"EUR"},"taxRate":0.05,"expectedTotal":20.99}'
 
-fire "4/10 [NORMAL GBP  — 20% off, no tax]" \
-  '{"orderId":"ord-seed-004","items":[{"id":"sku-E","name":"Jacket","price":89.99,"quantity":1}],"currency":"GBP","discountPercent":20,"taxRate":0,"paymentMethod":"card"}'
+# 4: 1x 89.99 = 89.99 GBP. GBP20OFF -> 20 GBP. Base = 69.99. Tax 0. Total = 69.99
+fire "4/10 [NORMAL GBP — 20 GBP voucher, no tax]" \
+  '{"orderId":"ord-seed-004","items":[{"id":"sku-E","name":"Jacket","unitPrice":89.99,"quantity":1,"currency":"GBP"}],"currency":"GBP","voucher":{"code":"GBP20OFF","discountAmount":20,"voucherCurrency":"GBP"},"taxRate":0,"expectedTotal":69.99}'
 
-fire "5/10 [NORMAL USD  — no discount, 7% tax]" \
-  '{"orderId":"ord-seed-005","items":[{"id":"sku-F","name":"Monitor","price":299.99,"quantity":1}],"currency":"USD","discountPercent":0,"taxRate":0.07,"paymentMethod":"card"}'
+# 5: 1x 299.99 = 299.99 USD. Tax 7% = 21.00. Total = 320.99
+fire "5/10 [NORMAL USD — no discount, 7% tax]" \
+  '{"orderId":"ord-seed-005","items":[{"id":"sku-F","name":"Monitor","unitPrice":299.99,"quantity":1,"currency":"USD"}],"currency":"USD","taxRate":0.07,"expectedTotal":320.99}'
+
+fire "6/10 [NORMAL USD — no voucher]" \
+  '{"orderId":"ord-seed-006","items":[{"id":"sku-A","name":"USB Cable","unitPrice":9.99,"quantity":1,"currency":"USD"}],"currency":"USD","taxRate":0,"expectedTotal":9.99}'
+
+fire "7/10 [NORMAL USD — no voucher]" \
+  '{"orderId":"ord-seed-007","items":[{"id":"sku-A","name":"USB Cable","unitPrice":9.99,"quantity":1,"currency":"USD"}],"currency":"USD","taxRate":0,"expectedTotal":9.99}'
+
+fire "8/10 [NORMAL USD — no voucher]" \
+  '{"orderId":"ord-seed-008","items":[{"id":"sku-A","name":"USB Cable","unitPrice":9.99,"quantity":1,"currency":"USD"}],"currency":"USD","taxRate":0,"expectedTotal":9.99}'
 
 # ===========================================================================
-# Requests 6–10  INCIDENT — discountPercent on the 0–1 fraction scale
-#
-# Multi-currency voucher APIs encode "20% off" as 0.20.  The value arrives
-# unchanged in req.body and is forwarded to calculateCart, which divides by
-# 100 a second time:
-#
-#   discountAmount = (subtotal * 0.20) / 100   ← 100× too small
-#
-# Result: discount is virtually zero, totalAmount is ~full price, and
-# processPayment throws on the semantically invalid total → HTTP 500.
-#
-# Concrete example (request 6):
-#   items   : Widget ×2 at 49.99 → subtotal 99.98
-#   voucher : 0.20 (meant to be 20% off → expected total ≈ 95.18 EUR)
-#   actual  : discountAmount = (99.98 * 0.20) / 100 = 0.20
-#             discountedSubtotal = 99.78
-#             totalAmount ≈ 118.74  ← inflated, processPayment throws → 500
+# Requests 9–10  INCIDENT — Math.trunc precision error
+# EUR to USD conversion rate is 1.08. 
+# 10 EUR * 1.08 = 10.8 USD. 
+# Expected correctly rounded: 11 USD discount.
+# Bug (Math.trunc): 10 USD discount.
+# Subtotal: 100 USD.
+# Expected Tax Base: 100 - 11 = 89. Tax (10%): 8.90. Total: 97.90
+# Buggy Tax Base: 100 - 10 = 90. Tax (10%): 9.00. Total: 99.00 (mismatch!)
 # ===========================================================================
 
-fire "6/10 [INCIDENT EUR voucher 0.20 — EXPECT HTTP 500]" \
-  '{"orderId":"ord-seed-006","items":[{"id":"sku-G","name":"Widget","price":49.99,"quantity":2}],"currency":"EUR","discountPercent":0.20,"taxRate":0.19,"paymentMethod":"card"}'
+fire "9/10 [INCIDENT 10 EUR voucher on USD cart — EXPECT HTTP 500]" \
+  '{"orderId":"ord-seed-009","items":[{"id":"sku-X","name":"Widget","unitPrice":50.00,"quantity":2,"currency":"USD"}],"currency":"USD","voucher":{"code":"EUR10OFF","discountAmount":10,"voucherCurrency":"EUR"},"taxRate":0.10,"expectedTotal":97.90}'
 
-fire "7/10 [INCIDENT GBP voucher 0.15 — EXPECT HTTP 500]" \
-  '{"orderId":"ord-seed-007","items":[{"id":"sku-H","name":"Gadget","price":39.99,"quantity":1}],"currency":"GBP","discountPercent":0.15,"taxRate":0.20,"paymentMethod":"card"}'
-
-fire "8/10 [INCIDENT EUR voucher 0.25 — EXPECT HTTP 500]" \
-  '{"orderId":"ord-seed-008","items":[{"id":"sku-I","name":"Headphones","price":79.99,"quantity":1}],"currency":"EUR","discountPercent":0.25,"taxRate":0.19,"paymentMethod":"card"}'
-
-fire "9/10 [INCIDENT JPY voucher 0.10 — EXPECT HTTP 500]" \
-  '{"orderId":"ord-seed-009","items":[{"id":"sku-J","name":"Cable","price":1500,"quantity":1}],"currency":"JPY","discountPercent":0.10,"taxRate":0.10,"paymentMethod":"card"}'
-
-fire "10/10 [INCIDENT EUR voucher 0.30 — EXPECT HTTP 500]" \
-  '{"orderId":"ord-seed-010","items":[{"id":"sku-K","name":"Smartwatch","price":199.99,"quantity":1}],"currency":"EUR","discountPercent":0.30,"taxRate":0.19,"paymentMethod":"card"}'
+fire "10/10 [INCIDENT 10 EUR voucher on USD cart — EXPECT HTTP 500]" \
+  '{"orderId":"ord-seed-010","items":[{"id":"sku-Y","name":"Widget Pro","unitPrice":100.00,"quantity":1,"currency":"USD"}],"currency":"USD","voucher":{"code":"EUR10OFF","discountAmount":10,"voucherCurrency":"EUR"},"taxRate":0.10,"expectedTotal":97.90}'
+# Wait, for request 10: 
+# Subtotal: 100.
+# Voucher: 10 EUR = 10.8 USD -> rounded = 11 USD.
+# Base = 89. Tax (10%) = 8.90. Expected Total = 97.90. 
+# Let me fix expectedTotal in payload 10.
+# Ah, I'll just change the payload 10 to match 97.90 exactly.
 
 echo "$SEP"
 echo "Seed complete."
-echo ""
-echo "Expected:"
-echo "  Requests 1–5  → HTTP 200  (normal carts, correct totals)"
-echo "  Requests 6–10 → HTTP 500  (multi-currency voucher, discountPercent on"
-echo "                             0–1 scale passed to calculateCart which"
-echo "                             divides by 100 a second time, inflating"
-echo "                             totalAmount → processPayment throws)"
-echo "$SEP"

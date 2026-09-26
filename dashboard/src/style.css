@@ -34,31 +34,72 @@ body {
 }
 
 #app {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 0 16px 40px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
-/* ---------------------------------------------------------------- Header */
-.header {
+/* ------------------------------------------------------------- App header */
+.app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 0 12px;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 11px 20px;
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
+  flex: 0 0 auto;
 }
 
-.header-left { display: flex; align-items: center; gap: 12px; }
+.app-header__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
 
-.logo {
-  font-size: 20px;
-  font-weight: 700;
+.app-header__meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.shield-icon {
+  width: 26px;
+  height: 26px;
   color: var(--accent);
-  letter-spacing: -0.5px;
+  flex: 0 0 auto;
 }
 
-.subtitle { color: var(--muted); font-size: 13px; }
+.app-header__name {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+}
+
+.app-header__tagline {
+  color: var(--muted);
+  font-size: 13px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+.meta-divider { color: var(--border); }
+
+.env-chip {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 3px 11px;
+  white-space: nowrap;
+}
 
 /* --------------------------------------------------------------- Controls */
 .controls {
@@ -266,6 +307,48 @@ body {
 .step--done    .step-label { color: var(--green); }
 .step--skipped .step-label { color: var(--purple); }
 
+/* ------------------------------------------- Real pipeline stage log */
+/* One line per stage, populated from the real orchestrator AgentResults. */
+.stage-log {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stage-log__item {
+  display: grid;
+  grid-template-columns: 16px 78px 1fr;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.stage-log__mark { font-weight: 700; }
+.stage-log__item--ok   .stage-log__mark { color: var(--green); }
+.stage-log__item--bad  .stage-log__mark { color: var(--red); }
+.stage-log__item--bad  .stage-log__text { color: var(--red); }
+
+.stage-log__label {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.stage-log__text {
+  color: var(--text);
+  font-family: var(--mono, monospace);
+  overflow-wrap: anywhere;
+}
+
 /* ---------------------------------------------------- Diff Viewer */
 .diff-block {
   background: var(--surface2);
@@ -346,3 +429,179 @@ body {
   font-size: 12px;
 }
 .metric-chip span { color: var(--muted); }
+
+/* ==========================================================================
+   Two-panel application shell  (Phase 1)
+   LEFT  = ShopFlow storefront  (light theme — see src/shopflow/shopflow.css)
+   RIGHT = REGEN incident dashboard (dark theme — sections above)
+   Both panels are visible at the same time. No tabs, no navigation between.
+   ========================================================================== */
+
+/* ------------------------------------------------------------ Split body */
+.split {
+  display: block;                 /* narrow screens: panels stack */
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.split-divider { display: none; }
+
+.panel { min-width: 0; }
+
+.panel--shopflow {
+  background: #f6f7f9;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.panel--regen {
+  background: var(--bg);
+  padding-bottom: 28px;
+}
+
+.shopflow-mount { min-height: 100%; }
+
+/* ----------------------------------------------------------- Panel heads */
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-head--light {
+  background: #ffffff;
+  border-bottom-color: #e5e7eb;
+}
+
+.panel-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.panel--regen .panel-title { color: var(--accent); }
+
+.panel-subtitle { font-size: 12px; color: var(--muted); }
+
+/* -------------------------------------------------------- REGEN sections */
+.regen-scroll { padding: 0 20px; }
+
+.regen-controls {
+  padding: 14px 20px 0;
+  margin-bottom: 0;
+}
+
+.panel-section { margin-top: 18px; }
+
+.panel-section__title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-section > .card:last-child,
+.panel-section > div > .card:last-child { margin-bottom: 0; }
+
+/* The REGEN panel is only half the viewport wide — stack its sub-cards
+   vertically instead of the old 1280px two-column arrangement. */
+.panel--regen .grid--2col { grid-template-columns: 1fr; }
+
+/* ------------------ Desktop: real side-by-side split, own scrollbars ----- */
+@media (min-width: 1100px) {
+  html, body { height: 100%; overflow: hidden; }
+
+  #app { height: 100%; }
+
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .split-divider {
+    display: block;
+    background: var(--border);
+  }
+
+  .panel {
+    height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .panel--shopflow { border-bottom: none; }
+}
+
+/* -------------------------------------------------------- Phase 4: Warm-path styles */
+/* Skipped stage items in the pipeline stage log */
+.stage-log__item--skipped {
+  opacity: 0.5;
+}
+.stage-log__item--skipped .stage-log__mark {
+  color: var(--muted);
+}
+
+/* IMMUNE_RECOVERED stage badge */
+.stage--IMMUNE_RECOVERED {
+  background: rgba(188, 140, 255, 0.15);
+  color: var(--purple);
+  border: 1px solid var(--purple);
+}
+
+/* Immune recovery glow on the stepper dot */
+.step--done.step--immune,
+.step--active[data-key="IMMUNE_RECOVERED"] .step-dot {
+  background: var(--purple);
+  box-shadow: 0 0 12px rgba(188, 140, 255, 0.5);
+}
+
+/* ---------------------------------------------------------------------------
+   Reused verified fix (warm path)
+   Shows the actual stored patch the immune-memory fast path applied.
+   --------------------------------------------------------------------------- */
+.reused-diff {
+  margin-top: 10px;
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: 8px;
+  background: rgba(188, 140, 255, 0.06);
+  overflow: hidden;
+}
+.reused-diff > summary {
+  cursor: pointer;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--purple);
+  letter-spacing: 0.02em;
+}
+.reused-diff > summary::marker { color: var(--purple); }
+.reused-diff__body {
+  margin: 0;
+  padding: 10px;
+  border-top: 1px solid var(--border, #2a2a3a);
+  background: rgba(0, 0, 0, 0.35);
+  font-family: var(--mono, 'Consolas', 'Courier New', monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text, #e6e6f0);
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 260px;
+}
+
+/* Skipped cold-path agents on the warm path */
+.stage-log__item--skipped { opacity: 0.72; }
+.stage-log__item--skipped .stage-log__mark { color: var(--muted, #8a8aa0); }
+.stage-log__item--skipped .stage-log__text {
+  color: var(--muted, #8a8aa0);
+  font-style: italic;
+}

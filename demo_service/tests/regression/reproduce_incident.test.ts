@@ -3,8 +3,8 @@
  *
  * Incident ID  : REGEN-INCIDENT-001
  * Root cause   : demo_service/src/services/cart.ts → convertVoucherDiscount()
- * Lines        : 61–79
- * Blast radius : 0.75
+ * Lines        : 26–38
+ * Blast radius : 0.4
  *
  * Bug description
  * ---------------
@@ -18,11 +18,8 @@
  * Reproduction scenario
  * ---------------------
  * Incident reproducer for: demo_service/src/services/cart.ts → convertVoucherDiscount()
- * Bug: Math.trunc() in convertVoucherDiscount() truncates the EUR→USD exchange
- * conversion of a voucher discount instead of rounding, producing a discount that
- * is 1 USD too small.
- * Trigger: apply a 10 EUR voucher to a USD cart;
- * expect 11 USD discount, receive 10 USD.
+ * Bug: Math.trunc() in convertVoucherDiscount() truncates the EUR→USD exchange conversion of a voucher discount instead of rounding, producing a discount that is 1 USD too small.
+ * Trigger: apply a 10 EUR voucher to a USD cart; expect 11 USD discount, receive 10 USD.
  *
  * This test FAILS on the unfixed code and PASSES after Treatment patches
  * Math.trunc → Math.round in convertVoucherDiscount().

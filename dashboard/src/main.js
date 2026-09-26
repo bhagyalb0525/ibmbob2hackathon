@@ -50,7 +50,10 @@ function addActivityItem(event) {
   const stage   = event.state ? event.state.stage : '';
   const agent   = event.state ? event.state.activeAgent : '';
   const history = event.state && event.state.history;
-  const lastMsg = history && history.length > 0 ? history[history.length - 1].message : stage;
+  // Prefer the real message the server attached to the event; fall back to the
+  // orchestrator's own latest history entry, then to the stage name.
+  const lastStepMsg = history && history.length > 0 ? history[history.length - 1].message : '';
+  const lastMsg = event.message || lastStepMsg || stage;
 
   const item = document.createElement('div');
   item.className = `activity-item activity-item--${cls}`;
@@ -77,10 +80,21 @@ function escHtml(s) {
 // ---------------------------------------------------------------------------
 // Render all components from state
 // ---------------------------------------------------------------------------
-function renderAll(state) {
-  if (window.__IncidentDetail)    window.__IncidentDetail.render(state,    mounts.incident());
-  if (window.__ImmuneMemoryStats) window.__ImmuneMemoryStats.render(state, mounts.immune());
-  if (window.__PipelineTracker)   window.__PipelineTracker.render(state,   mounts.tracker());
+
+/**
+ * Real warm-path facts from the most recent immune-memory event.
+ *
+ * The server sends this as a sibling of `state` on STAGE_CHANGED (only on a
+ * genuine match), so shared/types.ts needs no changes. It is passed to the
+ * components as an optional second argument and is null on a cold run.
+ */
+let immuneDetail = null;
+
+function renderAll(state, immune) {
+  if (immune) immuneDetail = immune;
+  if (window.__IncidentDetail)    window.__IncidentDetail.render(state,    mounts.incident(), immuneDetail);
+  if (window.__ImmuneMemoryStats) window.__ImmuneMemoryStats.render(state, mounts.immune(),   immuneDetail);
+  if (window.__PipelineTracker)   window.__PipelineTracker.render(state,   mounts.tracker(),  immuneDetail);
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +111,8 @@ function connectSSE() {
   es.addEventListener('pipeline', e => {
     try {
       const event = JSON.parse(e.data);
-      renderAll(event.state);
+      // `immune` carries the real matched entry / reused fix on a warm run.
+      renderAll(event.state, event.immune);
       addActivityItem(event);
     } catch (err) {
       console.error('[SSE] Parse error', err);
