@@ -1,1 +1,32 @@
-// Root workspace configuration and unified development / build scripts across sub-packages
+{
+  "name": "regen",
+  "version": "1.0.0",
+  "description": "Autonomous self-healing DevOps agent pipeline with immune memory for IBM Bob 2.0 Hackathon",
+  "main": "agents/orchestrator.ts",
+  "scripts": {
+    "start:dashboard": "node dashboard/server.js",
+    "start:demo": "ts-node demo_service/src/app.ts",
+    "test:demo": "jest --runInBand demo_service/tests",
+    "seed:incident": "bash demo_service/seed_incident.sh",
+    "run:pipeline": "ts-node agents/orchestrator.ts",
+    "build": "tsc --noEmit"
+  },
+  "keywords": [
+    "ibm-bob",
+    "devops",
+    "self-healing",
+    "agents",
+    "subagents",
+    "immune-memory"
+  ],
+  "author": "regen team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}
