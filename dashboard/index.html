@@ -1,1 +1,55 @@
-<!-- Single-page HTML shell with mounts for pipeline status stepper, live diff viewer, and immune memory telemetry -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>regen — Autonomous Self-Healing Dashboard</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <span class="logo">⚡ regen</span>
+        <span class="subtitle">Autonomous Self-Healing Pipeline</span>
+      </div>
+      <div class="header-right">
+        <span id="connection-badge" class="badge badge--connecting">Connecting…</span>
+      </div>
+    </header>
+
+    <!-- Control Bar -->
+    <div class="controls">
+      <button id="btn-trigger-full" class="btn btn--primary">▶ Run Full Pipeline</button>
+      <button id="btn-trigger-immune" class="btn btn--immune">⚡ Trigger Immune Match</button>
+      <button id="btn-reset" class="btn btn--danger">↺ Reset</button>
+    </div>
+
+    <!-- Top row: Incident + Memory Stats -->
+    <div class="grid grid--2col">
+      <!-- Incident Detail mount -->
+      <div id="mount-incident-detail"></div>
+
+      <!-- Immune Memory Stats mount -->
+      <div id="mount-immune-stats"></div>
+    </div>
+
+    <!-- Pipeline Tracker mount -->
+    <div id="mount-pipeline-tracker"></div>
+
+    <!-- Live Activity Feed -->
+    <section class="card">
+      <h3 class="card-title">Live Activity</h3>
+      <div id="activity-feed" class="activity-feed"></div>
+    </section>
+  </div>
+
+  <!-- Component scripts (vanilla ES modules) -->
+  <script type="module" src="/src/components/IncidentDetail.js"></script>
+  <script type="module" src="/src/components/ImmuneMemoryStats.js"></script>
+  <script type="module" src="/src/components/PipelineTracker.js"></script>
+  <!-- Main SSE client -->
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

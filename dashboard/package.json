@@ -1,1 +1,9 @@
-// Package configuration and local serve scripts for the live incident monitor UI
+{
+  "name": "dashboard",
+  "version": "1.0.0",
+  "description": "Live incident monitor UI and SSE server for project regen",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
