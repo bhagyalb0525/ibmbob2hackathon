@@ -2,11 +2,11 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://RENDER_DASHBOARD_URL/api/:path*"
+      "destination": "https://regen-dashboard.onrender.com/api/:path*"
     },
     {
       "source": "/events",
-      "destination": "https://RENDER_DASHBOARD_URL/events"
+      "destination": "https://regen-dashboard.onrender.com/events"
     },
     {
       "source": "/",
