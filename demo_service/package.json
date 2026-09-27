@@ -1,1 +1,10 @@
-// Dependencies and test scripts for the Node/Express demo checkout microservice
+{
+  "name": "demo-service",
+  "version": "1.0.0",
+  "description": "Demo Node/Express checkout service for incident reproduction",
+  "main": "src/app.ts",
+  "scripts": {
+    "start": "ts-node src/app.ts",
+    "test": "jest tests/unit"
+  }
+}
