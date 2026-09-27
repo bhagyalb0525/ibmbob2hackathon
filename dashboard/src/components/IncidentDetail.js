@@ -1,9 +1,5 @@
 // Incident view displaying root cause diagnosis, proposed code diff, and patch confidence score
 
-/**
- * Render diff text as coloured HTML lines.
- * Lines starting with '+' → green, '-' → red, '@@' / 'diff' → muted.
- */
 function renderDiff(diffText) {
   if (!diffText) return '';
   return diffText
@@ -35,6 +31,7 @@ function renderIncidentDetail(state, container) {
 
   const treatment = state.results && state.results.treatment;
   const triage    = state.results && state.results.triage;
+  const verification = state.results && state.results.verification;
 
   const confidencePct = treatment ? Math.round(treatment.confidenceScore * 100) : null;
 
@@ -87,6 +84,13 @@ function renderIncidentDetail(state, container) {
           </div>
         </div>
         <div class="diff-block">${renderDiff(treatment.gitDiff)}</div>
+      ` : ''}
+
+      ${verification && verification.patchApplied ? `
+        <div style="margin-top:10px;padding:8px 12px;border-radius:6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);font-size:12px">
+          <span style="color:var(--green);font-weight:600">✓ Fix Applied</span>
+          <span style="color:var(--text)"> — patch verified and deployed to ${escHtml(treatment ? treatment.targetFile : 'target file')}</span>
+        </div>
       ` : ''}
 
       <div class="stack-trace">${escHtml(inc.stackTrace)}</div>

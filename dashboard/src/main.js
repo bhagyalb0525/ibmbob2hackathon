@@ -11,6 +11,10 @@ const mounts = {
   tracker:   () => $('mount-pipeline-tracker'),
   feed:      () => $('activity-feed'),
   badge:     () => $('connection-badge'),
+  incidentBanner: () => $('incident-banner'),
+  incidentBannerDetail: () => $('incident-banner-detail'),
+  recoveryBanner: () => $('recovery-banner'),
+  recoveryBannerDetail: () => $('recovery-banner-detail'),
 };
 
 // ---------------------------------------------------------------------------
@@ -28,6 +32,42 @@ function setBadge(state, text) {
   if (!el) return;
   el.className = `badge badge--${state}`;
   el.textContent = text;
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// ---------------------------------------------------------------------------
+// Incident / Recovery banners
+// ---------------------------------------------------------------------------
+function showIncidentBanner(incident) {
+  const banner = mounts.incidentBanner();
+  const detail = mounts.incidentBannerDetail();
+  if (!banner || !detail) return;
+  detail.textContent = `${incident.errorSignature} — ${incident.serviceName} ${incident.endpoint} (HTTP ${incident.httpStatus})`;
+  banner.style.display = 'flex';
+}
+
+function hideIncidentBanner() {
+  const banner = mounts.incidentBanner();
+  if (banner) banner.style.display = 'none';
+}
+
+function showRecoveryBanner(message) {
+  const banner = mounts.recoveryBanner();
+  const detail = mounts.recoveryBannerDetail();
+  if (!banner || !detail) return;
+  detail.textContent = message || 'Fix verified and deployed';
+  banner.style.display = 'flex';
+}
+
+function hideRecoveryBanner() {
+  const banner = mounts.recoveryBanner();
+  if (banner) banner.style.display = 'none';
 }
 
 // ---------------------------------------------------------------------------
@@ -50,7 +90,8 @@ function addActivityItem(event) {
   const stage   = event.state ? event.state.stage : '';
   const agent   = event.state ? event.state.activeAgent : '';
   const history = event.state && event.state.history;
-  const lastMsg = history && history.length > 0 ? history[history.length - 1].message : stage;
+  const lastStepMsg = history && history.length > 0 ? history[history.length - 1].message : '';
+  const lastMsg = event.message || lastStepMsg || stage;
 
   const item = document.createElement('div');
   item.className = `activity-item activity-item--${cls}`;
@@ -61,26 +102,21 @@ function addActivityItem(event) {
 
   feed.prepend(item);
 
-  // Trim excess
   while (feed.children.length > MAX_FEED_ITEMS) {
     feed.removeChild(feed.lastChild);
   }
 }
 
-function escHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
 // ---------------------------------------------------------------------------
 // Render all components from state
 // ---------------------------------------------------------------------------
-function renderAll(state) {
-  if (window.__IncidentDetail)    window.__IncidentDetail.render(state,    mounts.incident());
-  if (window.__ImmuneMemoryStats) window.__ImmuneMemoryStats.render(state, mounts.immune());
-  if (window.__PipelineTracker)   window.__PipelineTracker.render(state,   mounts.tracker());
+let immuneDetail = null;
+
+function renderAll(state, immune) {
+  if (immune) immuneDetail = immune;
+  if (window.__IncidentDetail)    window.__IncidentDetail.render(state,    mounts.incident(), immuneDetail);
+  if (window.__ImmuneMemoryStats) window.__ImmuneMemoryStats.render(state, mounts.immune(),   immuneDetail);
+  if (window.__PipelineTracker)   window.__PipelineTracker.render(state,   mounts.tracker(),  immuneDetail);
 }
 
 // ---------------------------------------------------------------------------
@@ -97,8 +133,33 @@ function connectSSE() {
   es.addEventListener('pipeline', e => {
     try {
       const event = JSON.parse(e.data);
-      renderAll(event.state);
+      renderAll(event.state, event.immune);
       addActivityItem(event);
+
+      // Show/hide incident banner based on state
+      if (event.type === 'INCIDENT_SEEDED' && event.state && event.state.incident) {
+        showIncidentBanner(event.state.incident);
+      }
+
+      // Show recovery banner on resolution
+      if (event.state && event.state.stage === 'RESOLVED') {
+        hideIncidentBanner();
+        const v = event.state.results && event.state.results.verification;
+        const msg = v && v.patchApplied
+          ? `Fix verified — ${v.passedTests}/${v.totalTests} tests passed`
+          : 'Incident resolved';
+        showRecoveryBanner(msg);
+      } else if (event.state && event.state.stage === 'IMMUNE_RECOVERED') {
+        hideIncidentBanner();
+        const immune = event.immune;
+        const msg = immune && immune.fixApplied
+          ? `Recovered via immune memory in ${immune.memoryLatencyMs || 0}ms — fix reused`
+          : 'Recovered via immune memory';
+        showRecoveryBanner(msg);
+      } else if (event.state && event.state.stage === 'FAILED') {
+        hideIncidentBanner();
+        hideRecoveryBanner();
+      }
     } catch (err) {
       console.error('[SSE] Parse error', err);
     }
@@ -109,7 +170,6 @@ function connectSSE() {
   es.onerror = () => {
     setBadge('error', '✕ Disconnected');
     es.close();
-    // Reconnect after 3 s
     setTimeout(connectSSE, 3000);
   };
 }
@@ -120,10 +180,12 @@ function connectSSE() {
 function wireButtons() {
   const btnFull   = $('btn-trigger-full');
   const btnImmune = $('btn-trigger-immune');
+  const btnDemo   = $('btn-demo');
   const btnReset  = $('btn-reset');
 
   if (btnFull) {
     btnFull.addEventListener('click', () => {
+      hideRecoveryBanner();
       fetch('/api/trigger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ immuneMatch: false }) })
         .catch(err => console.error('[trigger]', err));
     });
@@ -131,13 +193,25 @@ function wireButtons() {
 
   if (btnImmune) {
     btnImmune.addEventListener('click', () => {
+      hideRecoveryBanner();
       fetch('/api/trigger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ immuneMatch: true }) })
         .catch(err => console.error('[trigger-immune]', err));
     });
   }
 
+  if (btnDemo) {
+    btnDemo.addEventListener('click', () => {
+      hideRecoveryBanner();
+      hideIncidentBanner();
+      fetch('/api/demo', { method: 'POST' })
+        .catch(err => console.error('[demo]', err));
+    });
+  }
+
   if (btnReset) {
     btnReset.addEventListener('click', () => {
+      hideIncidentBanner();
+      hideRecoveryBanner();
       fetch('/api/reset', { method: 'POST' })
         .catch(err => console.error('[reset]', err));
     });
