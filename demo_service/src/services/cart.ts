@@ -25,14 +25,14 @@ export const EXCHANGE_RATES: Record<string, number> = {
 
 export function convertVoucherDiscount(amount: number, fromCurrency: string, toCurrency: string): number {
   if (fromCurrency === toCurrency) return amount;
-  
+
   const fromRate = EXCHANGE_RATES[fromCurrency] || 1;
   const toRate = EXCHANGE_RATES[toCurrency] || 1;
-  
+
   // Convert to USD first, then to target currency
   const amountInUsd = amount * fromRate;
   const amountInTarget = amountInUsd / toRate;
-  
+
   // BUG: uses Math.trunc instead of Math.round, causing precision loss
   return Math.round(amountInTarget);
 }

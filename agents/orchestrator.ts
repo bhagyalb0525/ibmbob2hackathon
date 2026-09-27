@@ -353,6 +353,8 @@ export class Orchestrator {
       // 1. Immune Memory Check — planned fast path
       this.updateStage(PIPELINE_STAGES.MEMORY_LOOKUP, AGENT_NAMES.IMMUNE_MEMORY, 'Checking immune memory');
       const memoryMatch = await this.runMemoryCheck();
+      // Relay isImmuneMatch / memoryLatencyMs before TRIAGING or IMMUNE_RECOVERED.
+      this.emitStateUpdate();
 
       if (memoryMatch) {
         // Apply the stored verified fix to disk BEFORE declaring recovery, so

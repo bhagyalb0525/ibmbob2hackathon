@@ -399,6 +399,9 @@ body {
 .activity-item--completed{ border-color: var(--green); }
 .activity-item--reset    { border-color: var(--red); }
 .activity-item--immune   { border-color: var(--purple); }
+/* A run the server refused to start. Same red treatment as --reset; it is an
+   error notice, not a pipeline stage. */
+.activity-item--failed   { border-color: var(--red); }
 
 .activity-time { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .activity-msg  { color: var(--text); flex: 1; }

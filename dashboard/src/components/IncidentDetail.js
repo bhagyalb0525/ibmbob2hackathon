@@ -28,7 +28,7 @@ function renderIncidentDetail(state, container) {
     container.innerHTML = `
       <section class="card">
         <h3 class="card-title">Incident Detail</h3>
-        <p style="color:var(--muted);font-size:13px">No active incident — trigger a pipeline run to begin.</p>
+        <p style="color:var(--muted);font-size:13px">No active incident — a real ShopFlow checkout failure will appear here.</p>
       </section>`;
     return;
   }
@@ -37,6 +37,12 @@ function renderIncidentDetail(state, container) {
   const triage    = state.results && state.results.triage;
 
   const confidencePct = treatment ? Math.round(treatment.confidenceScore * 100) : null;
+
+  // demo_service exposes no traffic metrics, so a captured incident carries no
+  // real numbers. Render the chips only when the payload actually has values,
+  // rather than presenting "0%" / "0ms" as if they had been measured.
+  const m = inc.metrics || {};
+  const hasMetrics = Object.keys(m).some(k => typeof m[k] === 'number' && m[k] > 0);
 
   container.innerHTML = `
     <section class="card">
@@ -61,12 +67,18 @@ function renderIncidentDetail(state, container) {
         <span class="incident-value" style="color:var(--red);font-family:monospace">${escHtml(inc.errorMessage)}</span>
       </div>
 
-      <div class="metrics-row">
-        <div class="metric-chip"><span>Error rate: </span>${(inc.metrics.errorRate * 100).toFixed(0)}%</div>
-        <div class="metric-chip"><span>Affected: </span>${inc.metrics.affectedUsersPercent}%</div>
-        <div class="metric-chip"><span>p99: </span>${inc.metrics.p99LatencyMs}ms</div>
-        <div class="metric-chip"><span>Failed: </span>${inc.metrics.failedRequests}/${inc.metrics.totalRequests}</div>
-      </div>
+      ${hasMetrics ? `
+        <div class="metrics-row">
+          <div class="metric-chip"><span>Error rate: </span>${(m.errorRate * 100).toFixed(0)}%</div>
+          <div class="metric-chip"><span>Affected: </span>${m.affectedUsersPercent}%</div>
+          <div class="metric-chip"><span>p99: </span>${m.p99LatencyMs}ms</div>
+          <div class="metric-chip"><span>Failed: </span>${m.failedRequests}/${m.totalRequests}</div>
+        </div>
+      ` : `
+        <div class="metrics-row">
+          <div class="metric-chip"><span>Traffic metrics: </span>not reported by ${escHtml(inc.serviceName)}</div>
+        </div>
+      `}
 
       ${triage ? `
         <div style="margin-top:10px;font-size:12px">

@@ -41,9 +41,14 @@ function addActivityItem(event) {
 
   const cls = {
     INCIDENT_SEEDED:  'seeded',
+    INCIDENT_CAPTURED: 'seeded',
     AGENT_STARTED:    'started',
     AGENT_COMPLETED:  'completed',
     PIPELINE_RESET:   'reset',
+    // A trigger the server refused (e.g. no captured incident yet). This is a
+    // real server response, not a pipeline stage, so it never reaches the
+    // tracker — the tracker stays IDLE because nothing actually ran.
+    TRIGGER_REJECTED: 'failed',
     STAGE_CHANGED:    event.state && (event.state.stage === 'IMMUNE_RECOVERED') ? 'immune' : 'started',
   }[event.type] || 'started';
 
@@ -111,6 +116,9 @@ function connectSSE() {
   es.addEventListener('pipeline', e => {
     try {
       const event = JSON.parse(e.data);
+      // A reset clears any previously reported warm-path match, otherwise the
+      // immune-memory panel would keep showing the previous run's result.
+      if (event.type === 'PIPELINE_RESET') immuneDetail = null;
       // `immune` carries the real matched entry / reused fix on a warm run.
       renderAll(event.state, event.immune);
       addActivityItem(event);
@@ -137,18 +145,48 @@ function wireButtons() {
   const btnImmune = $('btn-trigger-immune');
   const btnReset  = $('btn-reset');
 
+  async function postPipelineTrigger(immuneMatch) {
+    try {
+      const res = await fetch('/api/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ immuneMatch }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // The orchestrator was NOT started, so no SSE stage event will ever
+        // arrive and the tracker correctly stays IDLE. Reporting this only to
+        // the console made the dashboard indistinguishable from a broken
+        // renderer: the button looked inert. Surface the server's own message
+        // in the Logs feed so the real reason is visible where the user is
+        // already looking. No pipeline state is invented.
+        const reason = data.message || data.error || ('HTTP ' + res.status);
+        console.error('[trigger]', reason);
+        addActivityItem({
+          type: 'TRIGGER_REJECTED',
+          timestamp: new Date().toISOString(),
+          message: 'Run not started — ' + reason,
+        });
+      }
+      return data;
+    } catch (err) {
+      console.error('[trigger]', err);
+      addActivityItem({
+        type: 'TRIGGER_REJECTED',
+        timestamp: new Date().toISOString(),
+        message: 'Run not started — cannot reach the dashboard server (' +
+          ((err && err.message) || 'network error') + ')',
+      });
+      return null;
+    }
+  }
+
   if (btnFull) {
-    btnFull.addEventListener('click', () => {
-      fetch('/api/trigger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ immuneMatch: false }) })
-        .catch(err => console.error('[trigger]', err));
-    });
+    btnFull.addEventListener('click', () => { postPipelineTrigger(false); });
   }
 
   if (btnImmune) {
-    btnImmune.addEventListener('click', () => {
-      fetch('/api/trigger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ immuneMatch: true }) })
-        .catch(err => console.error('[trigger-immune]', err));
-    });
+    btnImmune.addEventListener('click', () => { postPipelineTrigger(true); });
   }
 
   if (btnReset) {

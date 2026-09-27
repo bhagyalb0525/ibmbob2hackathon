@@ -37,10 +37,35 @@ function classifyStep(step, state, steps) {
   const stepIdx    = steps.findIndex(s => s.key === step.key);
   const finalStage = state.stage === 'RESOLVED' || state.stage === 'IMMUNE_RECOVERED' || state.stage === 'FAILED';
 
-  if (state.stage === step.key) return 'active';
+  // A run that has genuinely reached RESOLVED is finished, not still running.
+  // Classifying the terminal step as 'active' (accent + infinite pulse) left the
+  // Resolved node rendering as blue/in-progress after the backend had already
+  // completed, so the stepper never turned green. 'done' is the existing
+  // completed style (green dot, green label) — no new state is introduced.
+  // Only RESOLVED is changed here; the warm-path IMMUNE_RECOVERED step keeps its
+  // current appearance, and FAILED is untouched.
+  if (state.stage === step.key) return state.stage === 'RESOLVED' ? 'done' : 'active';
   if (finalStage && stepIdx <= activeIdx) return 'done';
   if (stepIdx < activeIdx) return 'done';
   return 'pending';
+}
+
+/**
+ * HTML-escape a value for safe interpolation.
+ *
+ * Every component is its own ES module, so module scope is NOT shared: the
+ * copies in main.js and IncidentDetail.js are invisible here. Without a local
+ * definition, renderStageLog() threw `ReferenceError: escHtml is not defined`
+ * on the first event that produced a stage-log line, which aborted
+ * renderPipelineTracker() before `container.innerHTML = html` and left the
+ * tracker frozen on its first IDLE render. main.js's try/catch reported it
+ * only as "[SSE] Parse error".
+ */
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 /**
